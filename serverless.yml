@@ -1,0 +1,122 @@
+service: courseAws
+frameworkVersion: "2"
+
+custom:
+  regionAbrev: UE1
+
+provider:
+  name: aws
+  runtime: nodejs12.x
+  stage: DEV
+  region: us-east-1
+  stackName: ${self:custom.regionAbrev}COURSEAWS${self:provider.stage}
+  iam:
+    role:
+      statements:
+        - Effect: "Allow"
+          Action:
+            - ses:SendEmail
+          Resource: "*"
+  lambdaHashingVersion: 20201221
+
+functions:
+  getStudent:
+    handler: src/getStudent/Controller.handler
+    name: LMB${self:provider.stage}001
+    description: main lambda to get student information
+    events:
+      - http:
+          path: student/{code}
+          method: get
+          authorizer:
+            name: MyAuthorizer01
+            type: COGNITO_USER_POOLS
+            authorizerId:
+              Ref: ApiGatewayAuthorizer
+            scopes:
+              - student/read
+
+  sendMail:
+    handler: src/sendMail/SendEmail.handler
+    name: LMB${self:provider.stage}002
+    events:
+      - sqs:
+          arn:
+            Fn::GetAtt:
+              - mailqueue
+              - Arn
+
+resources: # CloudFormation template syntax from here on.
+  Resources:
+    studentTable:
+      Type: AWS::DynamoDB::Table
+      Properties:
+        TableName: ${self:custom.regionAbrev}${self:provider.stage}LOGSTUDENT
+        AttributeDefinitions:
+          - AttributeName: id
+            AttributeType: S
+        KeySchema:
+          - AttributeName: id
+            KeyType: HASH
+        ProvisionedThroughput:
+          ReadCapacityUnits: 1
+          WriteCapacityUnits: 1
+    mailqueue:
+      Type: AWS::SQS::Queue
+      Properties:
+        QueueName: ${self:custom.regionAbrev}${self:provider.stage}MAILSQS
+    ApiGatewayAuthorizer:
+      DependsOn:
+        - ApiGatewayRestApi
+      Type: AWS::ApiGateway::Authorizer
+      Properties:
+        Name: APICognitoUserPool
+        Type: COGNITO_USER_POOLS
+        IdentitySource: method.request.header.Authorization
+        RestApiId:
+          Ref: ApiGatewayRestApi
+        ProviderARNs:
+          - Fn::GetAtt:
+              - CognitoUserPool
+              - Arn
+
+    CognitoUserPool:
+      Type: AWS::Cognito::UserPool
+      Properties:
+        UserPoolName: cognito_AWS
+    CognitoUserPoolDomain:
+      Type: AWS::Cognito::UserPoolDomain
+      Properties:
+        Domain: course2021
+        UserPoolId:
+          Ref: CognitoUserPool
+    CognitoUserPoolResourceServer:
+      Type: AWS::Cognito::UserPoolResourceServer
+      Properties:
+        Identifier: student
+        Name: student
+        Scopes:
+          - ScopeName: "read"
+            ScopeDescription: "get student information"
+        UserPoolId:
+          Ref: CognitoUserPool
+    CognitoUserPoolClient:
+      DependsOn: CognitoUserPoolResourceServer
+      Type: AWS::Cognito::UserPoolClient
+      Properties:
+        ClientName: clientAWSApp
+        AllowedOAuthFlowsUserPoolClient: true
+        GenerateSecret: true
+        ExplicitAuthFlows:
+          - ALLOW_CUSTOM_AUTH
+          - ALLOW_USER_SRP_AUTH
+          - ALLOW_REFRESH_TOKEN_AUTH
+        PreventUserExistenceErrors: ENABLED
+        AllowedOAuthFlows:
+          - client_credentials
+        AllowedOAuthScopes:
+          - student/read
+        SupportedIdentityProviders:
+          - COGNITO
+        UserPoolId:
+          Ref: CognitoUserPool
